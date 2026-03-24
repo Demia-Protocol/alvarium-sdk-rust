@@ -85,9 +85,9 @@ impl Publisher for MqttPublisher {
 fn setup_client(cfg: &MqttStreamConfig) -> (AsyncClient, EventLoop) {
     let mut mqtt_options =
         MqttOptions::new(&cfg.client_id, &cfg.provider.host, cfg.provider.port as u16);
-    mqtt_options.set_keep_alive(tokio::time::Duration::from_secs(cfg.keep_alive as u64));
+    mqtt_options.set_keep_alive(cfg.keep_alive as u16);
     mqtt_options.set_credentials(&cfg.user, cfg.password());
-    mqtt_options.set_clean_session(cfg.cleanness);
+    mqtt_options.set_clean_start(cfg.cleanness);
 
     AsyncClient::new(mqtt_options, cfg.cap)
 }

@@ -103,8 +103,8 @@ impl From<rumqttc::ConnectionError> for Error {
     }
 }
 
-impl From<rumqttc::ConnectReturnCode> for Error {
-    fn from(e: rumqttc::ConnectReturnCode) -> Self {
+impl From<rumqttc::v5::ConnectReturnCode> for Error {
+    fn from(e: rumqttc::v5::ConnectReturnCode) -> Self {
         Error::MqttConnectReturnError(format!("{:?}", e))
     }
 }
