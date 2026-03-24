@@ -26,21 +26,21 @@ iota-crypto = {version = "0.23.2", default-features = false, features = ["ed2551
 
 serde = "1.0.215"
 serde_json = "1.0.133"
-gethostname = "0.5"
+gethostname = "1.1.0"
 
-rand = { version = "0.8.5" }
+rand = { version = "0.10.0" }
 ulid = "1.0.0"
 
-reqwest = { version = "0.12.9", default-features = false, features = ["json", "rustls-tls"]}
+reqwest = { version = "0.13.2", default-features = false, features = ["json"]}
 futures = {version = "0.3.31", default-features = false}
 async-trait = "0.1.83"
 
-rustls = { version = "0.23.18", optional = true }
+rustls = { version = "0.24.0-dev.0", optional = true }
 rustls-pemfile = "2.2.0"
 native-tls = { version = "0.2.11", optional = true }
-webpki-roots = { version = "0.26.7", optional = true }
+webpki-roots = { version = "1.0.6", optional = true }
 
-rumqttc = "0.24.0"
+rumqttc = "0.25.1"
 
 thiserror = "2.0.3"
 log = "0.4"
