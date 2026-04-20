@@ -40,7 +40,7 @@ rustls-pki-types = "1.14.0"
 native-tls = { version = "0.2.11", optional = true }
 webpki-roots = { version = "1.0.6", optional = true }
 
-rumqttc-next = "0.28.0"
+rumqttc-next = "0.30.0"
 
 thiserror = "2.0.3"
 log = "0.4"
