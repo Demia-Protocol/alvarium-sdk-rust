@@ -2,7 +2,7 @@ use crate::config::{MqttStreamConfig, StreamConfig, StreamInfo};
 use crate::errors::{Error, Result};
 use alvarium_annotator::{MessageWrapper, Publisher};
 use log::{debug, warn};
-use rumqttc::{AsyncClient, ConnectionError, EventLoop, MqttOptions, QoS};
+use rumqttc::{AsyncClient, Broker, ConnectionError, EventLoop, MqttOptions, QoS};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -83,10 +83,12 @@ impl Publisher for MqttPublisher {
 }
 
 fn setup_client(cfg: &MqttStreamConfig) -> (AsyncClient, EventLoop) {
-    let mut mqtt_options =
-        MqttOptions::new(&cfg.client_id, &cfg.provider.host, cfg.provider.port as u16);
+    let mut mqtt_options = MqttOptions::new(
+        &cfg.client_id, 
+        Broker::tcp(cfg.provider.host.clone(), cfg.provider.port as u16)
+    );
     mqtt_options.set_keep_alive(cfg.keep_alive as u16);
-    mqtt_options.set_credentials(&cfg.user, cfg.password());
+    mqtt_options.set_credentials(cfg.user.clone(), cfg.password().to_string());
     mqtt_options.set_clean_start(cfg.cleanness);
 
     AsyncClient::new(mqtt_options, cfg.cap)
