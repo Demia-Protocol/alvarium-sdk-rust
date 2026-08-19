@@ -3,7 +3,7 @@ use crate::errors::{Error, Result};
 use alvarium_annotator::{MessageWrapper, Publisher};
 use core::str::FromStr;
 use futures::TryStreamExt;
-use log::{debug, info};
+use log::{debug, info, warn};
 use serde::{Deserialize, Serialize};
 use std::thread::sleep;
 use std::time::Duration;
@@ -147,6 +147,11 @@ impl Publisher for DemiaPublisher {
             send_subscription_request(&self.cfg.provider.uri(), body_bytes).await?;
             self.await_keyload().await?;
         }
+
+        // Reconcile with the branch head. A restored publisher resumes at whatever position its
+        // backup captured; without this it derives addresses that are already occupied and every
+        // send fails with AddressUsed, deterministically and forever.
+        self.sync_to_head().await;
         Ok(())
     }
 
@@ -154,6 +159,37 @@ impl Publisher for DemiaPublisher {
         debug!("Publishing message: {:?}", msg);
         let bytes = serde_json::to_vec(&msg)?;
 
+        let address = match self.send_signed(bytes.clone()).await {
+            Ok(address) => address,
+            Err(e) => {
+                // Retrying an unchanged desynced state can only repeat the failure, so catch up
+                // to the head first and try once more before giving up.
+                info!("Send failed ({e:?}); syncing to branch head and retrying once");
+                self.sync_to_head().await;
+                self.send_signed(bytes).await?
+            }
+        };
+
+        let backup = self.user.backup(&self.cfg.backup.password).await?;
+        std::fs::write(&self.cfg.backup.path, backup).map_err(Error::BackupFailed)?;
+        info!("Published new message: {}", address);
+        Ok(())
+    }
+}
+
+impl DemiaPublisher {
+    /// Walks the stream forward so the publisher's branch cursors match what is actually
+    /// published. Failures are logged rather than propagated: an un-synced publisher is no worse
+    /// off than before the attempt, and the caller still surfaces any subsequent send error.
+    async fn sync_to_head(&mut self) {
+        match self.user.sync().await {
+            Ok(count) => debug!("Synced {count} message(s) before publishing"),
+            Err(e) => warn!("Failed to sync to branch head: {e:?}"),
+        }
+    }
+
+    /// Sends one signed packet on the configured topic, returning the address it landed at.
+    async fn send_signed(&mut self, bytes: Vec<u8>) -> Result<Address> {
         let packet = self
             .user
             .message()
@@ -162,11 +198,7 @@ impl Publisher for DemiaPublisher {
             .signed()
             .send()
             .await?;
-
-        let backup = self.user.backup(&self.cfg.backup.password).await?;
-        std::fs::write(&self.cfg.backup.path, backup).map_err(Error::BackupFailed)?;
-        info!("Published new message: {}", packet.address());
-        Ok(())
+        Ok(packet.address())
     }
 }
 
