@@ -9,19 +9,24 @@ use std::thread::sleep;
 use std::time::Duration;
 use streams::{
     id::{Ed25519, Identifier},
-    transport::utangle::Client,
-    Address, Message, User,
+    transport::{utangle::Client, Transport},
+    Address, Message, TransportMessage, User,
 };
 
 const MAX_RETRIES: u8 = 100;
 
-pub struct DemiaPublisher {
+/// Transport is a parameter so a caller can supply a queued/durable transport instead of talking
+/// to the node directly. Defaults to the node client, which is what `Publisher::new` builds.
+pub struct DemiaPublisher<T = Client> {
     cfg: DemiaStreamsConfig,
-    user: User<Client>,
+    user: User<T>,
     identifier: Identifier,
 }
 
-impl DemiaPublisher {
+impl<T> DemiaPublisher<T>
+where
+    T: for<'a> Transport<'a, Msg = TransportMessage> + Send + Sync,
+{
     pub(crate) async fn await_keyload(&mut self) -> Result<()> {
         let mut i = 0;
         info!("Awaiting Keyload message from publisher");
@@ -44,7 +49,7 @@ impl DemiaPublisher {
         Err(Error::StreamsKeyloadNotFound)
     }
 
-    pub fn new_with_user(cfg: &StreamInfo, user: User<Client>) -> Result<DemiaPublisher> {
+    pub fn new_with_user(cfg: &StreamInfo, user: User<T>) -> Result<DemiaPublisher<T>> {
         match user.identifier() {
             Some(identifier) => {
                 let identifier = identifier.clone();
@@ -61,7 +66,7 @@ impl DemiaPublisher {
         }
     }
 
-    pub fn client(&mut self) -> &mut User<Client> {
+    pub fn client(&mut self) -> &mut User<T> {
         &mut self.user
     }
 
@@ -71,10 +76,10 @@ impl DemiaPublisher {
 }
 
 #[async_trait::async_trait]
-impl Publisher for DemiaPublisher {
+impl Publisher for DemiaPublisher<Client> {
     type StreamConfig = StreamInfo;
     type Error = crate::errors::Error;
-    async fn new(cfg: &StreamInfo) -> Result<DemiaPublisher> {
+    async fn new(cfg: &StreamInfo) -> Result<DemiaPublisher<Client>> {
         match &cfg.config {
             StreamConfig::DemiaStreams(cfg) => {
                 let client = Client::new(cfg.tangle_node.uri());
@@ -327,7 +332,7 @@ mod demia_test {
         info!("Publishing...");
         publisher.publish(data).await.unwrap();
 
-        let user = User::restore(
+        let user: User<Client> = User::restore(
             std::fs::read("temp_file").unwrap(),
             "password",
             Client::new("http://localhost:8080"),
