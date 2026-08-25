@@ -23,9 +23,9 @@ pub struct DemiaPublisher<T = Client> {
     identifier: Identifier,
 }
 
-impl<T> DemiaPublisher<T>
+impl<T, TSR> DemiaPublisher<T>
 where
-    T: for<'a> Transport<'a, Msg = TransportMessage> + Send + Sync,
+    T: for<'a> Transport<'a, Msg = TransportMessage, SendResponse = TSR> + Send + Sync,
 {
     pub(crate) async fn await_keyload(&mut self) -> Result<()> {
         let mut i = 0;
@@ -73,12 +73,93 @@ where
     pub fn identifier(&self) -> &Identifier {
         &self.identifier
     }
+
+    pub async fn close(&mut self) -> Result<()> {
+        // No need to disconnect from stream or drop anything
+        Ok(())
+    }
+
+    pub async fn reconnect(&mut self) -> Result<()> {
+        // No need to reconnect as disconnection does not occur
+        Ok(())
+    }
+    pub async fn connect(&mut self) -> Result<()> {
+        if self.user.stream_address().is_none() {
+            let announcement = get_announcement_id(&self.cfg.provider.uri()).await?;
+            let announcement_address = Address::from_str(&announcement)?;
+            info!("Announcement address: {}", announcement_address.to_string());
+
+            debug!("Fetching announcement message");
+            self.user.receive_message(announcement_address).await?;
+
+            debug!("Sending Streams Subscription message");
+            let subscription = self.user.subscribe().await?;
+
+            let id_type = 0;
+
+            let body = SubscriptionRequest {
+                address: subscription.address().to_string(),
+                identifier: self.identifier.to_string(),
+                id_type,
+                topic: self.cfg.topic.to_string(),
+            };
+
+            let body_bytes = serde_json::to_vec(&body)?;
+
+            info!("Sending subscription request to console");
+            send_subscription_request(&self.cfg.provider.uri(), body_bytes).await?;
+            self.await_keyload().await?;
+        }
+
+        // Reconcile with the branch head. A restored publisher resumes at whatever position its
+        // backup captured; without this it derives addresses that are already occupied and every
+        // send fails with AddressUsed, deterministically and forever.
+        self.sync_to_head().await;
+        Ok(())
+    }
+
+    pub async fn publish(&mut self, msg: MessageWrapper<'_>) -> Result<()> {
+        debug!("Publishing message: {:?}", msg);
+        let bytes = serde_json::to_vec(&msg)?;
+
+        let address = match self.send_signed(bytes.clone()).await {
+            Ok(address) => address,
+            Err(e) => {
+                // Retrying an unchanged desynced state can only repeat the failure, so catch up
+                // to the head first and try once more before giving up.
+                info!("Send failed ({e:?}); syncing to branch head and retrying once");
+                self.sync_to_head().await;
+                self.send_signed(bytes).await?
+            }
+        };
+
+        let backup = self.user.backup(&self.cfg.backup.password).await?;
+        std::fs::write(&self.cfg.backup.path, backup).map_err(Error::BackupFailed)?;
+        info!("Published new message: {}", address);
+        Ok(())
+    }
 }
 
 #[async_trait::async_trait]
 impl Publisher for DemiaPublisher<Client> {
     type StreamConfig = StreamInfo;
     type Error = crate::errors::Error;
+    async fn close(&mut self) -> Result<()> {
+        DemiaPublisher::close(self).await
+    }
+
+    async fn reconnect(&mut self) -> Result<()> {
+        DemiaPublisher::reconnect(self).await
+    }
+
+    async fn connect(&mut self) -> Result<()> {
+        DemiaPublisher::connect(self).await
+    }
+
+    async fn publish(&mut self, msg: MessageWrapper<'_>) -> Result<()> {
+        DemiaPublisher::publish(self, msg).await
+    }
+
     async fn new(cfg: &StreamInfo) -> Result<DemiaPublisher<Client>> {
         match &cfg.config {
             StreamConfig::DemiaStreams(cfg) => {
@@ -115,74 +196,12 @@ impl Publisher for DemiaPublisher<Client> {
             _ => Err(Error::IncorrectConfig),
         }
     }
-
-    async fn close(&mut self) -> Result<()> {
-        // No need to disconnect from stream or drop anything
-        Ok(())
-    }
-
-    async fn reconnect(&mut self) -> Result<()> {
-        // No need to reconnect as disconnection does not occur
-        Ok(())
-    }
-    async fn connect(&mut self) -> Result<()> {
-        if self.user.stream_address().is_none() {
-            let announcement = get_announcement_id(&self.cfg.provider.uri()).await?;
-            let announcement_address = Address::from_str(&announcement)?;
-            info!("Announcement address: {}", announcement_address.to_string());
-
-            debug!("Fetching announcement message");
-            self.user.receive_message(announcement_address).await?;
-
-            debug!("Sending Streams Subscription message");
-            let subscription = self.user.subscribe().await?;
-
-            let id_type = 0;
-
-            let body = SubscriptionRequest {
-                address: subscription.address().to_string(),
-                identifier: self.identifier.to_string(),
-                id_type,
-                topic: self.cfg.topic.to_string(),
-            };
-
-            let body_bytes = serde_json::to_vec(&body)?;
-
-            info!("Sending subscription request to console");
-            send_subscription_request(&self.cfg.provider.uri(), body_bytes).await?;
-            self.await_keyload().await?;
-        }
-
-        // Reconcile with the branch head. A restored publisher resumes at whatever position its
-        // backup captured; without this it derives addresses that are already occupied and every
-        // send fails with AddressUsed, deterministically and forever.
-        self.sync_to_head().await;
-        Ok(())
-    }
-
-    async fn publish(&mut self, msg: MessageWrapper<'_>) -> Result<()> {
-        debug!("Publishing message: {:?}", msg);
-        let bytes = serde_json::to_vec(&msg)?;
-
-        let address = match self.send_signed(bytes.clone()).await {
-            Ok(address) => address,
-            Err(e) => {
-                // Retrying an unchanged desynced state can only repeat the failure, so catch up
-                // to the head first and try once more before giving up.
-                info!("Send failed ({e:?}); syncing to branch head and retrying once");
-                self.sync_to_head().await;
-                self.send_signed(bytes).await?
-            }
-        };
-
-        let backup = self.user.backup(&self.cfg.backup.password).await?;
-        std::fs::write(&self.cfg.backup.path, backup).map_err(Error::BackupFailed)?;
-        info!("Published new message: {}", address);
-        Ok(())
-    }
 }
 
-impl DemiaPublisher {
+impl<T, TSR> DemiaPublisher<T>
+where
+    T: for<'a> Transport<'a, Msg = TransportMessage, SendResponse = TSR> + Send + Sync,
+{
     /// Walks the stream forward so the publisher's branch cursors match what is actually
     /// published. Failures are logged rather than propagated: an un-synced publisher is no worse
     /// off than before the attempt, and the caller still surfaces any subsequent send error.
